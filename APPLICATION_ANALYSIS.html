@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Call Monitoring - Application Analysis</title>
+<style>
+  :root{--bg:#fff;--fg:#1f2328;--muted:#59636e;--line:#d1d9e0;--card:#f6f8fa;--accent:#0b6bcb;--warn-bg:#fff1f0;--warn-line:#e5484d;--code:#eef1f4}
+  @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;--line:#30363d;--card:#151b23;--accent:#4493f8;--warn-bg:#2a1517;--warn-line:#f85149;--code:#1c232d}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 'Segoe UI',system-ui,sans-serif}
+  main{max-width:960px;margin:0 auto;padding:24px 16px 64px}
+  h1{font-size:26px;margin:0 0 4px}
+  h2{font-size:20px;margin:40px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:22px 0 6px}
+  p.sub{color:var(--muted);margin:0 0 20px}
+  nav{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:16px 0}
+  nav a{color:var(--accent);text-decoration:none;margin-right:14px;white-space:nowrap}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--card)}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font:13px Consolas,monospace}
+  pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;font:13px/1.5 Consolas,monospace}
+  pre code{padding:0;background:none}
+  .alert{background:var(--warn-bg);border-left:4px solid var(--warn-line);padding:10px 14px;border-radius:4px;margin:14px 0}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 16px;margin:12px 0}
+  ul,ol{padding-left:22px}
+  li{margin:3px 0}
+  .tag{font-size:12px;padding:1px 8px;border-radius:10px;background:var(--code);color:var(--muted)}
+</style>
+</head>
+<body>
+<main>
+<h1>AI Call Monitoring: Application Analysis</h1>
+<p class="sub">Real-time transcription and field extraction app. Analysis date: 2026-11-20. Folder: <code>Voice_data_extraction/Real_time_transcription</code></p>
+
+<nav>
+  <a href="#what">1. What it does</a>
+  <a href="#files">2. Files</a>
+  <a href="#keys">3. Keys needed</a>
+  <a href="#gaps">4. Gaps</a>
+  <a href="#adapt">5. New fields</a>
+  <a href="#enhance">6. Enhancements</a>
+  <a href="#next">7. Next steps</a>
+  <a href="#design">8. Design deep-dive</a>
+</nav>
+
+<h2 id="what">1. What it does</h2>
+<p>A local Flask and Socket.IO web app for monitoring a live call (for example on Teams). It works in three steps:</p>
+<ol>
+  <li><b>Capture audio</b> from two sources: the microphone ("Caller-1") and the system audio output ("Caller-2", the remote party).</li>
+  <li><b>Transcribe</b> both streams in real time with Azure Speech-to-Text. Partial and final results appear as chat bubbles.</li>
+  <li><b>Extract fields.</b> Every few seconds the whole transcript is sent to Azure OpenAI (<code>gpt-4o</code>, JSON mode). The reply fills a form: Bank Account Number, Routing Number, Payment Date, Payment Amount.</li>
+</ol>
+<p>On <b>Stop</b>, the app uploads the transcript <code>.txt</code> to Azure Blob Storage, runs a final extraction, and appends one row to an Excel file in Blob Storage. The <b>Save</b> button does the same for manually edited values.</p>
+
+<h2 id="files">2. Files</h2>
+<table>
+<tr><th>File</th><th>Role</th></tr>
+<tr><td><code>app.py</code></td><td>Main backend with <b>hardcoded keys</b>. Uses Stereo Mix or the default input device for Caller-2.</td></tr>
+<tr><td><code>app_updated.py</code></td><td>The better version. Lines 1-487 are a commented-out old copy; live code starts at line 488. Reads keys from env vars, uses WASAPI loopback (<code>pyaudiowpatch</code>), auto-restarts dropped recognizers, filters echo duplicates, extracts every 3 s, uses thread locks.</td></tr>
+<tr><td><code>ui.py</code></td><td>Entire front end as an HTML string (<code>HTML_TEMPLATE</code>): split view, form, popup, Socket.IO client.</td></tr>
+<tr><td><code>AI_Agent.py</code></td><td>Older prototype. Imports a missing module (<code>ui_html_template_Copy</code>), so it will not run. Saves to a local xlsx.</td></tr>
+<tr><td><code>lchain.py</code></td><td>Unused LangChain snippet extracting Name, DOB and Account Number via the <code>RASA_Instruct</code> deployment.</td></tr>
+<tr><td><code>requirements.txt</code></td><td>Lists <code>pyaudio</code>, but <code>app_updated.py</code> needs <code>pyaudiowpatch</code>. Missing <code>python-dotenv</code>.</td></tr>
+<tr><td><code>.deployment</code>, <code>.vscode/settings.json</code></td><td>Azure App Service deploy config (site <code>aicallagent</code>).</td></tr>
+</table>
+<p>Treat <code>app_updated.py</code> as the real application.</p>
+
+<div class="alert"><b>Secrets exposed.</b> <code>app.py</code>, <code>AI_Agent.py</code> and <code>lchain.py</code> contain live hardcoded credentials: an Azure Speech key, an Azure OpenAI key and the Blob Storage account key (inside a connection string). Treat them as compromised and <b>rotate all three in the Azure portal</b>. Do not copy this folder or commit it before they are removed. There is no <code>.env</code> file, so <code>app_updated.py</code> fails at startup with a <code>KeyError</code> until one is created.</div>
+
+<h2 id="keys">3. Keys and config needed to run</h2>
+<p>Create a <code>.env</code> file next to <code>app_updated.py</code>:</p>
+<pre><code>AZURE_SPEECH_KEY=&lt;Azure AI Speech resource key&gt;
+AZURE_SPEECH_REGION=centralindia
+AZURE_OPENAI_KEY=&lt;Azure OpenAI resource key&gt;
+AZURE_OPENAI_ENDPOINT=https://&lt;your-resource&gt;.openai.azure.com/
+AZURE_STORAGE_CONNECTION_STRING=&lt;Storage account connection string&gt;</code></pre>
+<table>
+<tr><th>Azure resource</th><th>Notes</th></tr>
+<tr><td>Azure AI Speech</td><td>Provides the key and region.</td></tr>
+<tr><td>Azure OpenAI</td><td>Needs a deployment named exactly <code>gpt-4o</code> (the code passes it as <code>model</code>). API version <code>2024-12-01-preview</code> is hardcoded.</td></tr>
+<tr><td>Azure Storage account</td><td>Container <code>real-time-transcrptions</code> (typo is in the code). Created automatically by the text upload if missing. Excel blob name is hardcoded.</td></tr>
+</table>
+<p><b>Local requirements:</b> Windows (WASAPI loopback is Windows-only), a microphone, and:</p>
+<pre><code>pip install flask flask-socketio azure-cognitiveservices-speech openai pandas openpyxl azure-storage-blob PyAudioWPatch python-dotenv</code></pre>
+<p>No other API keys are needed. LangChain is unused.</p>
+
+<h2 id="gaps">4. Gaps and issues</h2>
+<h3>Security</h3>
+<ul>
+<li>Keys hardcoded in three files.</li>
+<li><code>cors_allowed_origins="*"</code> and no authentication. Anyone who can reach the server can start recording and write to storage.</li>
+<li>The UI inserts transcript text with <code>innerHTML</code>, so injected content could run script (XSS).</li>
+</ul>
+<h3>Deployment contradiction</h3>
+<ul><li>Configured for Azure App Service, but a cloud server has no microphone or system audio. The capture code only works on the user's own Windows machine. A hosted version needs browser-based audio capture.</li></ul>
+<h3>Correctness</h3>
+<ul>
+<li>The whole transcript is re-sent to the LLM every 3 seconds. Cost and latency grow with call length.</li>
+<li>Each extraction overwrites the form, including with blanks. Earlier found values can vanish and manual edits get overwritten.</li>
+<li>Global state (<code>conversation_log</code>, <code>recording_active</code>) is shared across all browser clients. A second user interferes with the first.</li>
+<li>A new <code>auto_extract_worker</code> thread starts on every Start. Quick stop and start can leave duplicate workers.</li>
+<li><code>clear_conv</code> replaces the log without taking the lock.</li>
+<li><b>Excel save is a race condition.</b> It downloads the file, appends a row and re-uploads, so concurrent saves lose data. It also swallows every read exception, so a transient error overwrites the file with a single row.</li>
+<li>Stop always saves a row, even when extraction is empty or failed, and even if you already saved manually.</li>
+<li>No validation or normalisation: routing numbers (9 digits, ABA checksum), account numbers, dates and amounts are free text. Spoken digits depend entirely on the LLM.</li>
+<li>The prompt has no guidance on speaker roles, corrections ("no, I meant...") or confidence.</li>
+<li>Transcripts are stored unredacted. Bank details are sensitive: no PII masking, retention policy or consent notice.</li>
+<li>No real diarization: speakers are just "mic" and "system audio". Several remote participants are not separated.</li>
+<li>The echo filter is heuristic (<code>SequenceMatcher</code> at 0.72) and can drop legitimately repeated phrases such as "yes".</li>
+<li>Speech language is the default en-US. Indian-English or multi-language calls need an explicit language or auto-detect.</li>
+<li>No logging framework, tests, health checks or UI reconnect handling. <code>gunicorn</code> needs an eventlet or gevent worker for Socket.IO.</li>
+</ul>
+<h3>Project hygiene</h3>
+<ul><li>Three copies of the app, a commented-out 487-line block, dead <code>lchain.py</code>, a mismatched <code>requirements.txt</code>, <code>__pycache__</code> checked in, and the folder is not a git repository.</li></ul>
+
+<h2 id="adapt">5. Adapting it to a different set of fields</h2>
+<p>The field set is hardcoded in four places:</p>
+<table>
+<tr><th>Location</th><th>What to change</th></tr>
+<tr><td><code>ask_azure()</code> in <code>app_updated.py</code> (lines 619-657)</td><td>System prompt names the fields; code reads four JSON keys and returns a tuple.</td></tr>
+<tr><td><code>save_to_excel()</code> (line 591)</td><td>Column names and function signature.</td></tr>
+<tr><td><code>ui.py</code></td><td>Form inputs (lines 128-146), <code>update_form_fields</code>, <code>clear_form_fields</code>, <code>show_popup</code>, <code>refreshConversation</code>, <code>saveFormData</code>.</td></tr>
+<tr><td>Socket.IO payloads</td><td><code>save_form_data</code>, <code>stop_recording</code>, <code>auto_extract_worker</code>.</td></tr>
+</table>
+<h3>Recommended refactor (about half a day)</h3>
+<p>Define the schema once and generate everything from it:</p>
+<pre><code># fields.py
+FIELDS = [
+  {"key": "customer_name",  "label": "Customer Name",   "type": "string", "hint": "Full name as stated by the caller"},
+  {"key": "dob",            "label": "Date of Birth",   "type": "date",   "hint": "DD/MM/YYYY"},
+  {"key": "policy_number",  "label": "Policy Number",   "type": "string", "hint": "digits only"},
+]</code></pre>
+<ul>
+<li>Build the LLM prompt and a JSON schema from <code>FIELDS</code>. Use Azure OpenAI structured outputs (<code>response_format</code> with <code>json_schema</code>, <code>strict: true</code>) instead of plain JSON mode.</li>
+<li>Return a dict, not a tuple. Write Excel columns from <code>FIELDS</code>.</li>
+<li>Send <code>FIELDS</code> to the browser on connect and render the form dynamically.</li>
+<li>Keep one prompt block per use case so you can switch (<code>USE_CASE=insurance_claim</code>) without code changes.</li>
+</ul>
+
+<h2 id="enhance">6. Enhancements, in priority order</h2>
+<ol>
+<li><b>Security first:</b> rotate keys; use <code>.env</code> or Azure Key Vault with managed identity (<code>DefaultAzureCredential</code>); add authentication (Entra ID or login); restrict CORS; escape transcript text in the UI (<code>textContent</code>).</li>
+<li><b>Config-driven fields</b> (section 5), plus per-field validators (regex, ABA checksum, date parsing) and a confidence score or evidence quote per field.</li>
+<li><b>Better extraction:</b> send only new turns plus current known values and merge (overwrite only when the new value is non-empty and changed); lock fields the user edited; extract only when new final utterances arrive; use a cheaper model (<code>gpt-4o-mini</code>) for live updates and <code>gpt-4o</code> for the final pass.</li>
+<li><b>Per-session state:</b> replace globals with a <code>Session</code> object keyed by the Socket.IO session ID. Add a session ID to every saved row.</li>
+<li><b>Reliable storage:</b> use Azure Table Storage, Cosmos DB or SQL instead of Excel read-modify-write; export to Excel on demand. If keeping Excel, use a blob lease or append-only CSV.</li>
+<li><b>Real diarization:</b> Azure Speech <code>ConversationTranscriber</code>, or stereo channels from a call recording. Add language auto-detect, phrase lists for domain terms (<code>PhraseListGrammar</code>) and profanity or PII masking.</li>
+<li><b>Make it deployable:</b> capture audio in the browser (<code>getUserMedia</code> for mic, <code>getDisplayMedia</code> for tab audio) and stream to the server over Socket.IO, removing the Windows and PyAudio dependency. For telephony, consider Azure Communication Services call recording or media streaming.</li>
+<li><b>Call-level features:</b> summary, sentiment, compliance checklist (for example "agent verified identity: yes/no", as <code>lchain.py</code> hinted), action items, audit log.</li>
+<li><b>Operational quality:</b> consolidate to one <code>app.py</code>, delete dead files, pin <code>requirements.txt</code>, use <code>logging</code>, run with <code>gunicorn -k eventlet</code>, add tests for extraction and validators, put it in git.</li>
+<li><b>Compliance:</b> call-recording consent prompt, PII redaction before storage, retention policy, encryption at rest (Storage enables this by default).</li>
+</ol>
+
+<h2 id="next">7. Suggested next steps</h2>
+<div class="box">
+<ol>
+<li>Rotate the three exposed Azure credentials.</li>
+<li>Create <code>.env</code> and get <code>app_updated.py</code> running locally as-is to confirm the pipeline.</li>
+<li>Decide the new field list and whether the app stays local on Windows or is hosted (this decides how audio is captured).</li>
+<li>Do the config-driven refactor: one <code>app.py</code> based on <code>app_updated.py</code>, a <code>fields.py</code>, a <code>.env.example</code> and a corrected <code>requirements.txt</code>.</li>
+</ol>
+</div>
+
+<h2 id="design">8. Solution design deep-dive (vendor-neutral)</h2>
+<p><b>Confirmed constraints:</b> local Windows desktop only; other STT vendors acceptable; live (during-call) extraction required.</p>
+<h3>Principle: five thin, swappable seams</h3>
+<table>
+<tr><th>Seam</th><th>Interface</th><th>Today</th><th>Why</th></tr>
+<tr><td>1. Audio source</td><td>yields PCM chunks per channel</td><td>PyAudio mic + WASAPI loopback</td><td>Keep as is (local only)</td></tr>
+<tr><td>2. Transcriber</td><td><code>stream(audio) -> {speaker, text, final}</code></td><td>Azure Speech SDK</td><td>Accuracy, latency and diarization differ by vendor and audio</td></tr>
+<tr><td>3. Extractor</td><td><code>extract(schema, new_turns, current_values) -> dict</code></td><td>gpt-4o JSON mode on full transcript</td><td>Cost, correctness, flexible field sets</td></tr>
+<tr><td>4. Store</td><td><code>save(session_id, record, transcript)</code></td><td>Excel read-modify-write in Blob</td><td>Race conditions, no queries</td></tr>
+<tr><td>5. Schema</td><td><code>fields.py</code> list used by 2-4 and the UI</td><td>Hardcoded in four places</td><td>New use case with no code change</td></tr>
+</table>
+<p>Each seam is 10-40 lines. No frameworks or orchestration layers.</p>
+
+<h3>Market developments that matter</h3>
+<p>Sources are mostly vendor docs and blogs, so treat accuracy claims as directional and benchmark on your own audio.</p>
+<ul>
+<li><b>Strict structured outputs are standard.</b> <code>response_format: json_schema</code> with <code>strict: true</code> (needs <code>additionalProperties: false</code>) guarantees schema-valid output. Cheap upgrade, no new service. <a href="https://learn.microsoft.com/azure/ai-foundry/openai/how-to/structured-outputs">Azure docs</a></li>
+<li><b>Diarization-aware models exist</b> (<code>gpt-4o-transcribe-diarize</code>), but sources conflict on whether they work on the realtime streaming path. Azure Speech Conversation Transcription is the documented live-diarization route. Verify before depending on it. <a href="https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/choose-the-right-speech-and-voice-model/4533856">MS guide</a>, <a href="https://developers.openai.com/api/docs/models/gpt-4o-transcribe-diarize">OpenAI model page</a></li>
+<li><b>Streaming STT is crowded and converging.</b> Azure Speech, Deepgram, AssemblyAI and Speechmatics all offer streaming with diarization. Benchmark rankings disagree depending on who ran them (WER roughly 4-9%). Choose by testing on your own calls. <a href="https://deepgram.com/blog/best-speech-to-text-apis-2026">Deepgram</a>, <a href="https://www.assemblyai.com/blog/best-speech-to-text-apis-startups">AssemblyAI</a></li>
+<li><b>Managed audio-to-fields services exist.</b> Azure Content Understanding audio analyzers do transcription, diarization and custom field extraction, but are in preview and post-call oriented. Optional comparison for the final pass, not for live updates. <a href="https://learn.microsoft.com/azure/ai-services/content-understanding/audio/overview">MS overview</a></li>
+<li><b>Small, fast LLMs are good enough for live extraction.</b> Use a mini-class model live and a larger model for the final pass.</li>
+</ul>
+
+<h3>Recommended design</h3>
+<ul>
+<li><b>Extraction (highest value, lowest effort):</b> trigger on each new <i>final</i> utterance (debounce about 2 s) instead of a timer. Send schema + current values + last N turns, and get back only changed fields using strict JSON schema generated from <code>fields.py</code>. Merge rule: overwrite a field only if the new value is non-empty and not user-edited; keep an evidence quote and confidence per field. Plain-Python validators per field type (ABA checksum, dates, amounts, regex) flag values that models mishear.</li>
+<li><b>Transcription:</b> Azure Speech stays the default behind the seam, plus one alternative adapter (Deepgram or AssemblyAI) chosen by env var. Run a bake-off on 5-10 real recorded calls before choosing. Use channel-based speaker roles (mic = agent, loopback = customer), phrase lists for domain terms and an explicit language.</li>
+<li><b>Storage:</b> append-only SQLite with transcript, record, per-field evidence, session ID and prompt/model version. Excel becomes an on-demand export.</li>
+<li><b>Cross-cutting:</b> <code>.env</code> secrets (after rotating the exposed keys), a per-session state object, UI XSS fix, PII and consent notice, logging, pytest for validators and the merge rule, and a replay script over 10-20 labelled transcripts to measure per-field accuracy when prompts or models change.</li>
+</ul>
+
+<h3>Deliberately not recommended</h3>
+<ul>
+<li>LangChain or agent frameworks: one function call per extraction does not need them.</li>
+<li>Vector DB or RAG: nothing here needs retrieval.</li>
+<li>Microservices or queues: one Flask process is enough on a local desktop.</li>
+<li>Realtime speech-to-speech voice-agent APIs: this is a listen-only monitor.</li>
+<li>Hard dependency on one STT vendor or on a preview service.</li>
+</ul>
+
+<h3>Implementation order</h3>
+<ol>
+<li>Rotate keys, create <code>.env</code>, consolidate to a single <code>app.py</code> based on <code>app_updated.py</code>, delete dead files.</li>
+<li><code>fields.py</code> with dynamic form, schema-driven prompt and storage.</li>
+<li>Incremental strict-schema extraction, merge rule, validators.</li>
+<li>Per-session state, SQLite and Excel export, XSS and auth basics.</li>
+<li>STT adapter and bake-off.</li>
+</ol>
+<h3>Verification</h3>
+<ul>
+<li>Play a recorded call through the speakers while talking into the mic: both speakers appear, fields fill incrementally without flicker, and edited fields are not overwritten.</li>
+<li>Replay labelled transcripts and compare per-field accuracy before and after changes.</li>
+<li>Unit tests for validators and the merge rule.</li>
+<li>Drop the network mid-call: recognizers restart, and concurrent saves lose no data.</li>
+</ul>
+</main>
+</body>
+</html>

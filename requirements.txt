@@ -1,0 +1,10 @@
+flask
+flask-socketio
+simple-websocket
+azure-cognitiveservices-speech
+anthropic
+pandas
+openpyxl
+PyAudioWPatch
+python-dotenv
+pytest

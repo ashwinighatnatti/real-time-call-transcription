@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Call Monitor - Updated Code Analysis</title>
+<style>
+  :root{--bg:#fff;--fg:#1f2328;--muted:#59636e;--line:#d1d9e0;--card:#f6f8fa;--accent:#0b6bcb;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--code:#eef1f4;--warn-bg:#fff8e6;--bad-bg:#fff1f0;--ok-bg:#eafbee}
+  @media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#9198a1;--line:#30363d;--card:#151b23;--accent:#4493f8;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--code:#1c232d;--warn-bg:#2a2210;--bad-bg:#2a1517;--ok-bg:#12261a}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 'Segoe UI',system-ui,sans-serif}
+  main{max-width:1000px;margin:0 auto;padding:24px 16px 80px}
+  h1{font-size:27px;margin:0 0 4px}
+  h2{font-size:21px;margin:44px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 6px}
+  p.sub{color:var(--muted);margin:0 0 18px}
+  nav{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 16px;margin:16px 0;line-height:2}
+  nav a{color:var(--accent);text-decoration:none;margin-right:14px;white-space:nowrap}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:14px;display:block;overflow-x:auto}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--card)}
+  code{background:var(--code);padding:1px 5px;border-radius:4px;font:13px Consolas,monospace}
+  pre{background:var(--code);padding:12px 14px;border-radius:8px;overflow-x:auto;font:13px/1.5 Consolas,monospace}
+  pre code{padding:0;background:none}
+  ul,ol{padding-left:22px} li{margin:3px 0}
+  .note,.ok,.warn,.bad{border-left:4px solid;padding:10px 14px;border-radius:4px;margin:14px 0}
+  .note{background:var(--card);border-color:var(--accent)}
+  .ok{background:var(--ok-bg);border-color:var(--ok)}
+  .warn{background:var(--warn-bg);border-color:var(--warn)}
+  .bad{background:var(--bad-bg);border-color:var(--bad)}
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:14px 0}
+  .box{flex:1 1 150px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px;font-size:13px}
+  .box b{display:block;margin-bottom:2px;color:var(--accent)}
+  .arrow{align-self:center;color:var(--muted);font-size:18px}
+  .pill{font-size:12px;padding:1px 8px;border-radius:10px;background:var(--code);color:var(--muted);white-space:nowrap}
+  .yes{color:var(--ok);font-weight:600}.no{color:var(--bad);font-weight:600}.part{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<h1>Call Monitor: Updated Code Analysis</h1>
+<p class="sub">Property tax details extracted live from a voice call. Snapshot of the refactored code base on 2026-11-20. Folder: <code>Voice_data_extraction/Real_time_transcription</code>. Replaces the analysis in <code>APPLICATION_ANALYSIS.html</code>, which describes the old app.</p>
+
+<nav>
+  <a href="#summary">1. Summary</a><a href="#arch">2. Architecture</a><a href="#files">3. Files</a><a href="#config">4. Configuration</a>
+  <a href="#model">5. Data model</a><a href="#flow">6. Runtime flow</a><a href="#modules">7. Modules</a><a href="#events">8. Socket events</a>
+  <a href="#extract">9. Extraction rules</a><a href="#storage">10. Storage</a><a href="#audio">11. Audio and speech</a><a href="#errors">12. Errors</a>
+  <a href="#security">13. Security</a><a href="#tests">14. Tests</a><a href="#run">15. Run and troubleshoot</a><a href="#changes">16. Changes vs old</a>
+  <a href="#gaps">17. Gaps</a><a href="#next">18. Next steps</a>
+</nav>
+
+<h2 id="summary">1. Summary</h2>
+<p>A local Flask and Socket.IO web app for Windows. It listens to a live call on two audio channels (your microphone and the computer's speaker output), transcribes both with Azure AI Speech, and sends the recent conversation to a Claude model on Azure AI Foundry. The model fills a form with the property address, any number of parcels, any number of taxing agencies per parcel, and any number of tax installments per agency. Repeats, read-backs and confirmations on the call are recognised so they never create duplicates or overwrite stored values. Values appear in the browser as the call goes on, you can correct them, and the finished call is saved to a local SQLite database and exportable to Excel.</p>
+
+<div class="ok"><b>Verified:</b> 14 unit tests pass; the agency form was clicked through in a real browser (add, delete, save, export, no JavaScript errors); the Flask and Socket.IO wiring was exercised end to end with a stubbed LLM (before the agency level was added; not re-run since); real calls to your Claude deployment extracted the property, parcel, two agencies and their installments correctly, and a six-turn call full of read-backs and one correction ended with exactly one parcel, one agency and one installment, saved and exported to Excel; the Speech key authenticates in <code>centralindia</code>; Export Excel works with an empty and a populated database; Start with no microphone shows a banner on the page.</div>
+<div class="warn"><b>Not verified:</b> live transcription with real audio. This machine has no microphone available (the session uses "Remote Audio", which indicates Remote Desktop) so the mic path and the full speak-to-form loop have not been run by me. The loopback (system audio) device is present.</div>
+
+<h2 id="arch">2. Architecture</h2>
+<div class="flow">
+  <div class="box"><b>Audio capture</b>Mic via Speech SDK default mic; system audio via WASAPI loopback (PyAudioWPatch)</div><div class="arrow">&rarr;</div>
+  <div class="box"><b>Transcription</b>Azure AI Speech, continuous recognition, one recognizer per channel</div><div class="arrow">&rarr;</div>
+  <div class="box"><b>Session log</b>Final utterances with speaker label and timestamp</div><div class="arrow">&rarr;</div>
+  <div class="box"><b>Extractor</b>Claude (Azure Foundry), forced tool call, schema from <code>fields.py</code></div><div class="arrow">&rarr;</div>
+  <div class="box"><b>Merge</b>Updates session state; respects user edits and deletions</div><div class="arrow">&rarr;</div>
+  <div class="box"><b>Browser form</b>Live via Socket.IO; user edits lock values</div><div class="arrow">&rarr;</div>
+  <div class="box"><b>SQLite + Excel</b>Saved on Stop or Save; export on demand</div>
+</div>
+<p>Everything runs in one Python process. Each browser connection gets its own <code>Session</code> object holding its transcript, extracted state, locked fields and deleted items. Three background threads run per recording: audio/mic recognizer, speaker (loopback) capture plus its recognizer, and the extraction worker. The app listens on <code>127.0.0.1:5000</code> only.</p>
+<p>The design follows five small seams so parts can be replaced without touching the rest:</p>
+<table>
+<tr><th>Seam</th><th>Where it lives</th><th>To swap it</th></tr>
+<tr><td>Field schema</td><td><code>fields.py</code></td><td>Edit the lists. Prompt, JSON schema, form, DB columns and Excel all follow.</td></tr>
+<tr><td>Extractor (LLM)</td><td><code>extractor.py</code> <code>extract()</code> and <code>_get_client()</code></td><td>Change those two functions only.</td></tr>
+<tr><td>Store</td><td><code>store.py</code></td><td>Replace <code>save_call()</code> and <code>export_xlsx()</code>.</td></tr>
+<tr><td>Transcriber</td><td><code>app.py</code> <code>run_recognizer()</code>, <code>mic_worker()</code>, <code>speaker_worker()</code></td><td>Not yet a separate module (see gaps).</td></tr>
+<tr><td>Audio source</td><td><code>app.py</code> <code>_loopback_device()</code>, <code>speaker_worker()</code></td><td>Windows only.</td></tr>
+</table>
+
+<h2 id="files">3. Files</h2>
+<table>
+<tr><th>File</th><th>Lines</th><th>Purpose</th></tr>
+<tr><td><code>app.py</code></td><td>450</td><td>Server: Flask routes, Socket.IO handlers, per-session state, audio capture, Speech recognizers, extraction scheduling, warnings.</td></tr>
+<tr><td><code>extractor.py</code></td><td>319</td><td>State shape, JSON schema, system prompt, Claude call, merge logic, warnings. No audio, web or storage code.</td></tr>
+<tr><td><code>fields.py</code></td><td>86</td><td>The four field lists and the value cleaning and checking functions.</td></tr>
+<tr><td><code>store.py</code></td><td>75</td><td>SQLite schema, upsert of a call, Excel export. Adds missing columns automatically.</td></tr>
+<tr><td><code>ui.py</code></td><td>228</td><td>The whole front end as one HTML string (<code>HTML_TEMPLATE</code>): layout, CSS, Socket.IO client, form rendering.</td></tr>
+<tr><td><code>tests/test_extractor.py</code></td><td>175</td><td>14 unit tests for validators, merge rules, repeats and corrections, schema and storage.</td></tr>
+<tr><td><code>requirements.txt</code></td><td>10</td><td>flask, flask-socketio, simple-websocket, azure-cognitiveservices-speech, anthropic, pandas, openpyxl, PyAudioWPatch, python-dotenv, pytest.</td></tr>
+<tr><td><code>.gitignore</code></td><td>4</td><td>Ignores <code>.env</code>, <code>data/</code>, <code>__pycache__/</code>, <code>legacy/</code>.</td></tr>
+<tr><td><code>data/calls.db</code></td><td>-</td><td>SQLite database, created on first use. The old file (previous table layout, no agency level) was deleted; it is recreated automatically on the next save.</td></tr>
+<tr><td><code>static/</code>, <code>logo.gif</code>, <code>logo.png</code></td><td>-</td><td>Logo used by the page header (<code>/static/logo.gif</code>).</td></tr>
+<tr><td><code>legacy/</code></td><td>-</td><td>Old files kept for reference: <code>app.py</code>, <code>app_updated.py</code>, <code>AI_Agent.py</code>, <code>lchain.py</code>, <code>ui_old.py</code>. Several contain the old hardcoded keys.</td></tr>
+<tr><td><code>.deployment</code>, <code>.vscode/settings.json</code></td><td>-</td><td>Azure App Service deploy config from the original app. Untouched and no longer applicable to a local-only app.</td></tr>
+<tr><td><code>APPLICATION_ANALYSIS.html</code></td><td>-</td><td>Earlier analysis of the old app plus the design deep-dive.</td></tr>
+</table>
+<div class="warn"><b>Missing:</b> <code>.env.example</code> was created earlier but is no longer in the folder. There is now also a file named <code>.env - bak</code> (a backup of the old <code>.env</code>). It is <b>not</b> covered by <code>.gitignore</code> and contains credentials. Do not copy the folder anywhere with it inside.</div>
+
+<h2 id="config">4. Configuration</h2>
+<p>Settings are read from <code>.env</code> in the folder where <code>python app.py</code> is run (loaded by <code>python-dotenv</code>). Values are never printed.</p>
+<table>
+<tr><th>Variable</th><th>Required</th><th>Used for</th></tr>
+<tr><td><code>AZURE_ANTHROPIC_API_KEY</code></td><td class="yes">Yes</td><td>Claude on Azure AI Foundry. App exits at startup if missing.</td></tr>
+<tr><td><code>AZURE_ANTHROPIC_API_ENDPOINT</code></td><td class="yes">Yes</td><td>Foundry base URL, like <code>https://&lt;resource&gt;.services.ai.azure.com/anthropic/</code>.</td></tr>
+<tr><td><code>MODEL_DEPLOYMENT</code> or <code>AZURE_ANTHROPIC_DEPLOYMENT_NAME</code></td><td class="yes">One of them</td><td>The Azure deployment name sent as <code>model</code>. Your file currently uses the second name.</td></tr>
+<tr><td><code>AZURE_SPEECH_KEY</code></td><td class="part">At Start</td><td>Azure AI Speech key. If absent the app still starts; clicking Start shows "AZURE_SPEECH_KEY is missing".</td></tr>
+<tr><td><code>AZURE_SPEECH_REGION</code></td><td>No (default <code>centralindia</code>)</td><td>Region of the Speech resource, such as <code>centralindia</code>.</td></tr>
+<tr><td><code>LLM_LIVE_DEPLOYMENT</code></td><td>No</td><td>Cheaper or faster model for live updates. Defaults to the main deployment.</td></tr>
+<tr><td><code>LLM_FINAL_DEPLOYMENT</code></td><td>No</td><td>Model for the full-transcript pass at Stop. Defaults to the main deployment.</td></tr>
+<tr><td><code>SPEECH_LANGUAGE</code></td><td>No (default <code>en-US</code>)</td><td>Recognition language.</td></tr>
+<tr><td><code>PARCEL_NUMBER_PATTERN</code></td><td>No</td><td>Regex; parcel numbers that do not fully match are flagged (never rejected).</td></tr>
+<tr><td><code>DB_PATH</code></td><td>No (default <code>data/calls.db</code>)</td><td>SQLite file location.</td></tr>
+</table>
+<p>Tunable constants at the top of <code>app.py</code>:</p>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Meaning</th></tr>
+<tr><td><code>EXTRACT_DEBOUNCE_SEC</code></td><td>2.0</td><td>After new speech arrives, wait this long before calling the LLM.</td></tr>
+<tr><td><code>LIVE_CONTEXT_TURNS</code></td><td>12</td><td>Live extraction sees only the last 12 utterances plus current values.</td></tr>
+<tr><td><code>MAX_RECOGNIZER_RESTARTS</code></td><td>5</td><td>How often a dropped Speech session is rebuilt per channel.</td></tr>
+<tr><td><code>CHUNK</code></td><td>1024</td><td>Frames per audio read from the loopback device.</td></tr>
+<tr><td><code>ECHO_WINDOW_SEC</code> / <code>ECHO_SIMILARITY</code></td><td>2.5 / 0.72</td><td>Echo filter thresholds (section 11).</td></tr>
+</table>
+<p>Credentials present in the current <code>.env</code> (names only): <code>AZURE_ANTHROPIC_API_KEY</code>, <code>AZURE_ANTHROPIC_API_ENDPOINT</code>, <code>AZURE_ANTHROPIC_DEPLOYMENT_NAME</code>, <code>AZURE_SPEECH_KEY</code>, <code>AZURE_SPEECH_REGION</code>. The Speech key was verified by requesting a token from <code>centralindia</code> (HTTP 200).</p>
+
+<h2 id="model">5. Data model and fields</h2>
+<pre><code>call
+ +-- property_address
+ +-- parcels[]                       (one property can have several)
+      +-- parcel_number, parcel_address
+      +-- agencies[]                 (each parcel can have several taxing agencies)
+           +-- agency_name, agency_details
+           +-- installments[]        (each agency can have several)
+                +-- tax_amount, tax_due_date, tax_note</code></pre>
+<table>
+<tr><th>Level</th><th>Key</th><th>Label</th><th>Type</th><th>Meaning and cleaning</th></tr>
+<tr><td>Property</td><td><code>property_address</code></td><td>Property Address</td><td>string</td><td>The address as the caller gives it. May be informal or a mailing address (for example a P.O. Box).</td></tr>
+<tr><td>Parcel</td><td><code>parcel_number</code></td><td>Parcel Number</td><td>string</td><td>Assessor's Parcel Number. Digits spoken one by one are joined; dashes kept. Optional format check via <code>PARCEL_NUMBER_PATTERN</code>.</td></tr>
+<tr><td>Parcel</td><td><code>parcel_address</code></td><td>Parcel Address</td><td>string</td><td>Official situs address from the county record, only if stated as such. Never copied from the property address. Values like "0 Main St" or "N/A" for vacant land are accepted.</td></tr>
+<tr><td>Agency</td><td><code>agency_name</code></td><td>Agency Name</td><td>string</td><td>The taxing agency or collector for the parcel, for example "County Tax Collector". Used to match the same agency when it is mentioned again.</td></tr>
+<tr><td>Agency</td><td><code>agency_details</code></td><td>Agency Details</td><td>string</td><td>One free-text line for everything else said about the agency: phone, address, website, hours, payment info, separated by "; " (for example <code>Phone 555-010-2000; www.county.gov/tax</code>). Phone, address and website are not separate fields because they are not always discussed. Empty if nothing was stated. It can grow as more is said but never shrinks.</td></tr>
+<tr><td>Installment</td><td><code>tax_amount</code></td><td>Tax Amount</td><td>amount</td><td>Normalised to a plain number with two decimals: <code>$1,250</code> becomes <code>1250.00</code>. If unparseable the raw text is kept and flagged.</td></tr>
+<tr><td>Installment</td><td><code>tax_due_date</code></td><td>Tax Due Date</td><td>date</td><td>Stored as <code>YYYY-MM-DD</code>. Parses <code>YYYY-MM-DD</code>, <code>MM/DD/YYYY</code>, <code>MM-DD-YYYY</code>, <code>March 15, 2026</code>, <code>March 15 2026</code>, <code>Mar 15, 2026</code>. Otherwise kept raw and flagged.</td></tr>
+<tr><td>Installment</td><td><code>tax_note</code></td><td>Installment Note</td><td>string</td><td>Short label such as "1st half", "2nd half", "delinquent", "current". Added so installments can be told apart; belongs to an agency, not directly to the parcel; remove it by deleting one line in <code>fields.py</code>.</td></tr>
+</table>
+<p>The property address vs parcel address distinction follows the table you supplied: the property address is the raw input as given by the caller (unstandardised, possibly a mailing address); the parcel address is the canonical situs address recorded by the county for a specific parcel.</p>
+<h3>How to add or change a field</h3>
+<ol>
+<li>Add a dict to <code>PROPERTY_FIELDS</code>, <code>PARCEL_FIELDS</code>, <code>AGENCY_FIELDS</code> or <code>INSTALLMENT_FIELDS</code> in <code>fields.py</code> with <code>key</code>, <code>label</code>, <code>type</code> (<code>string</code>, <code>amount</code> or <code>date</code>) and <code>hint</code> (the instruction shown to the model).</li>
+<li>Restart the app. The prompt, tool schema, web form, database columns (added with <code>ALTER TABLE</code> on first connect) and Excel export columns all pick it up. No other file needs editing.</li>
+<li>To add a new level (for example owners per parcel; the agency level was added this way), more code is needed in <code>extractor.py</code> (schema, merge) and <code>ui.py</code>.</li>
+</ol>
+
+<h2 id="flow">6. Runtime flow</h2>
+<h3>Page load</h3>
+<ol><li>Browser opens <code>/</code> and loads the HTML plus Socket.IO 4.7.5 from cdnjs.</li><li>On connect the server creates a <code>Session</code>, sends <code>config</code> (the four field lists) and <code>state_update</code> (empty state).</li><li>The browser builds the Property section and renders parcel cards, each with its agencies and installments, from state.</li></ol>
+<h3>Start</h3>
+<ol>
+<li>If <code>AZURE_SPEECH_KEY</code> is empty: emit <code>error_message</code> and stop.</li>
+<li>Reset the session (new call id, empty transcript, state, locks and deletions). Any manual edits made before Start are discarded.</li>
+<li>Start three threads: <code>extract_worker</code>, <code>mic_worker</code> (Caller-1) and <code>speaker_worker</code> (Caller-2).</li>
+</ol>
+<h3>During the call</h3>
+<ol>
+<li>Each channel's recognizer emits partial results (shown as "listening...") and final results.</li>
+<li>A final result is dropped if it looks like an echo of the other channel (section 11); otherwise it is appended to the session log and sent to the page as <code>new_message</code>.</li>
+<li>The new final result sets a "dirty" flag. The extraction worker sees it, waits 2 seconds (so a speaker can finish), then runs a live extraction on the last 12 utterances plus the current values.</li>
+<li>The model first writes a short reasoning (new items, repeats ignored, corrections), which is printed in the terminal. Its answer is then merged into the session state under the repeat-safe rules in section 9.</li>
+<li>If the merge changed anything, <code>state_update</code> goes to the browser and the form updates without overwriting the field you are typing in.</li>
+</ol>
+<h3>Stop</h3>
+<ol>
+<li>Stop flag set, recognizers stopped, 0.3 s pause so in-flight results land.</li>
+<li>One final extraction over the <b>whole</b> transcript (blocks the Stop handler until the model answers).</li>
+<li>The call is saved to SQLite (upsert by call id) and the page is told <code>recording_stopped</code> and <code>saved</code>.</li>
+</ol>
+<h3>Save call, Clear, Export</h3>
+<ul>
+<li><b>Save call</b> upserts the current state and transcript under the same call id, so clicking it repeatedly never creates duplicates.</li>
+<li><b>Clear</b> resets the session (new call id) and clears the form and transcript. It does not delete anything already saved.</li>
+<li><b>Export Excel</b> opens <code>/export.xlsx</code> in a new tab and downloads <code>calls.xlsx</code> built from all saved calls.</li>
+<li>If the browser disconnects, the session and its audio are stopped. Unsaved data is not saved automatically.</li>
+</ul>
+
+<h2 id="modules">7. Module details</h2>
+<h3><code>fields.py</code></h3>
+<table>
+<tr><th>Item</th><th>What it does</th></tr>
+<tr><td><code>PROPERTY_FIELDS</code>, <code>PARCEL_FIELDS</code>, <code>AGENCY_FIELDS</code>, <code>INSTALLMENT_FIELDS</code></td><td>The single source of truth (section 5). <code>parcel_number</code> also carries an optional <code>pattern</code> read from <code>PARCEL_NUMBER_PATTERN</code>.</td></tr>
+<tr><td><code>normalize(ftype, value)</code></td><td>Trims text, converts amounts and dates as above. Never raises; returns raw text if it cannot parse.</td></tr>
+<tr><td><code>check(field, value)</code></td><td>Returns a warning message ("Not a valid amount", "Not a valid date (expected YYYY-MM-DD)", "Unexpected format") or an empty string. Flags only; never rejects.</td></tr>
+</table>
+<h3><code>extractor.py</code></h3>
+<table>
+<tr><th>Function</th><th>What it does</th></tr>
+<tr><td><code>_get_client()</code></td><td>Lazily creates <code>anthropic.AnthropicFoundry</code> with the endpoint and key from the environment. Lazy so tests import the module without keys.</td></tr>
+<tr><td><code>new_state()</code>, <code>new_parcel()</code>, <code>new_agency()</code>, <code>new_installment()</code></td><td>Create empty structures. Parcels, agencies and installments get a random 6-character id.</td></tr>
+<tr><td><code>public_state(state)</code></td><td>Deep copy of state plus a <code>warnings</code> map keyed <code>property.&lt;key&gt;</code> or <code>&lt;item id&gt;.&lt;key&gt;</code>. This is what the browser receives and what the model sees as current state.</td></tr>
+<tr><td><code>build_schema()</code></td><td>JSON schema generated from the field lists: <code>reasoning</code> string, <code>property</code> object, a <code>parcels</code> array (each parcel has an <code>agencies</code> array, each agency an <code>installments</code> array) and a <code>corrections</code> array of <code>{id, key, value, evidence}</code>; every value is a string; <code>additionalProperties</code> false.</td></tr>
+<tr><td><code>build_system_prompt()</code></td><td>Fixed rules plus each field's <code>hint</code> (section 9).</td></tr>
+<tr><td><code>extract(snapshot, transcript, deployment)</code></td><td>One <code>messages.create</code> call with one tool (<code>record_extraction</code>) and <code>tool_choice</code> forcing it; <code>max_tokens=2000</code>. Returns the tool input dict. Raises if no tool call comes back.</td></tr>
+<tr><td><code>merge(state, result, locked, deleted)</code></td><td>Folds the answer into state (rules in section 9). Returns True if anything changed.</td></tr>
+<tr><td><code>_accept(ftype, old, new)</code></td><td>Decides whether a re-stated value may change a stored one: only to fill an empty slot, or (text only) to extend it with more detail.</td></tr>
+<tr><td><code>_same_name(a, b)</code></td><td>Agency-name match: equal after normalising, or one contains the other (min. 4 characters), so "County" and "County Tax Office" are one agency.</td></tr>
+<tr><td><code>_apply_corrections(state, corrections, locked)</code></td><td>Applies explicit speaker corrections, the only path that replaces a stored value. Skips locked fields and unknown ids.</td></tr>
+<tr><td><code>installment_signature(agency_id, inst)</code>, <code>agency_signature(parcel_id, agency)</code></td><td>Identities used to remember deleted installments and agencies.</td></tr>
+</table>
+<h3><code>store.py</code></h3>
+<table>
+<tr><th>Function</th><th>What it does</th></tr>
+<tr><td><code>_connect()</code></td><td>Creates the <code>data/</code> folder and database, creates tables, and adds any column present in <code>fields.py</code> but missing in the table.</td></tr>
+<tr><td><code>save_call(call_id, state, transcript)</code></td><td>Deletes any existing rows for that call id and re-inserts the property, parcels, agencies and installments, in one transaction.</td></tr>
+<tr><td><code>export_xlsx()</code></td><td>Joins the four tables and returns an in-memory xlsx with one row per installment (section 10).</td></tr>
+</table>
+<h3><code>app.py</code></h3>
+<table>
+<tr><th>Piece</th><th>What it does</th></tr>
+<tr><td>Startup check</td><td>Exits with a clear message if the Claude key, endpoint or deployment name is missing.</td></tr>
+<tr><td><code>Session</code></td><td>Per browser connection: <code>lock</code>, <code>active</code>, <code>recognizers</code>, <code>warned</code>, <code>dirty</code> event, plus (reset on Start/Clear) <code>call_id</code>, <code>log</code>, <code>state</code>, <code>locked</code> and <code>deleted</code>. Methods <code>reset()</code>, <code>push_state()</code>, <code>transcript()</code>. Stored in <code>SESSIONS</code> by Socket.IO sid.</td></tr>
+<tr><td>Routes</td><td><code>GET /</code> serves the page; <code>GET /export.xlsx</code> downloads the Excel file.</td></tr>
+<tr><td><code>run_extraction(s, final)</code></td><td>Builds the transcript text (last 12 turns, or all if final), calls <code>extract</code>, merges, pushes state. An extraction error is printed and ignored, so a failed call never breaks the session.</td></tr>
+<tr><td><code>extract_worker</code></td><td>Waits for the dirty flag, debounces 2 s, then runs a live extraction. Runs only while recording.</td></tr>
+<tr><td><code>run_recognizer</code></td><td>Generic continuous-recognition loop with auto-restart (section 11).</td></tr>
+<tr><td><code>mic_worker</code></td><td>Caller-1 using the default microphone.</td></tr>
+<tr><td><code>speaker_worker</code></td><td>Caller-2: finds the WASAPI loopback of the default speakers, reads it in 1024-frame chunks, pushes it to a Speech push stream.</td></tr>
+<tr><td><code>warn()</code></td><td>Prints and emits <code>warning_message</code> once per source per call, with a friendly text for the no-microphone case.</td></tr>
+<tr><td><code>socketio.run(...)</code></td><td>Binds <code>127.0.0.1:5000</code>, threading mode, debug off, no wildcard CORS.</td></tr>
+</table>
+<h3><code>ui.py</code></h3>
+<ul>
+<li>Header with logo, Start, Stop, Clear and Export Excel; a status bar; a yellow warning area; a conversation pane on the left; the form on the right (Property, Parcels, Add parcel, Save call).</li>
+<li>The form is built from the <code>config</code> event, so new fields show up without front-end edits.</li>
+<li>Each parcel is a card with its fields, a Delete button, an agencies list and "+ Add agency". Each agency block has its name and details fields, a delete button, its own installments list and "+ Add installment". Each installment has its own fields and a delete button.</li>
+<li>All transcript and field text is inserted with <code>textContent</code> or input values, not <code>innerHTML</code> (closes the earlier XSS gap).</li>
+<li><code>render()</code> updates values in place and skips the input you are focused on, so live updates do not interrupt typing. Fields with a warning get an orange border and a tooltip.</li>
+<li>Typing in any field sends <code>field_edit</code>, which locks that value against later model overwrites. When you leave the field (blur) the same event is sent with <code>final: true</code>, and the server cleans the value with <code>normalize()</code> like a model value: <code>04/10/2026</code> becomes <code>2026-04-10</code>, <code>1250</code> becomes <code>1250.00</code>. Cleaning waits for blur so typing is never interrupted; unparseable values are kept as typed and flagged.</li>
+<li>Speaker bubbles: the first speaker is left-aligned (blue), the second right-aligned (purple).</li>
+</ul>
+
+<h2 id="events">8. Socket.IO event reference</h2>
+<h3>Browser to server</h3>
+<table>
+<tr><th>Event</th><th>Payload</th><th>Effect</th></tr>
+<tr><td><code>start_recording</code></td><td>-</td><td>Reset session, start threads (needs Speech key).</td></tr>
+<tr><td><code>stop_recording</code></td><td>-</td><td>Stop audio, final extraction, save, notify.</td></tr>
+<tr><td><code>clear_conversation</code></td><td>-</td><td>Reset session and state.</td></tr>
+<tr><td><code>field_edit</code></td><td><code>{scope, id, key, value, final?}</code></td><td>Set value; add <code>(id, key)</code> to locked set. With <code>final: true</code> (sent on blur) the value is normalised first. Scope is <code>property</code>, <code>parcel</code>, <code>agency</code> or <code>installment</code>.</td></tr>
+<tr><td><code>add_parcel</code></td><td>-</td><td>Append an empty parcel.</td></tr>
+<tr><td><code>add_agency</code></td><td><code>{parcel_id}</code></td><td>Append an empty agency to the parcel.</td></tr>
+<tr><td><code>add_installment</code></td><td><code>{agency_id}</code></td><td>Append an empty installment to the agency.</td></tr>
+<tr><td><code>delete_parcel</code></td><td><code>{id}</code></td><td>Remove; remember its normalised parcel number so it is not re-added.</td></tr>
+<tr><td><code>delete_agency</code></td><td><code>{id}</code></td><td>Remove (with its installments); remember its parcel and normalised name so it is not re-added.</td></tr>
+<tr><td><code>delete_installment</code></td><td><code>{id}</code></td><td>Remove; remember its agency, amount and due date so it is not re-added.</td></tr>
+<tr><td><code>save_call</code></td><td>-</td><td>Upsert to SQLite; reply <code>saved</code>.</td></tr>
+</table>
+<h3>Server to browser</h3>
+<table>
+<tr><th>Event</th><th>Payload</th><th>Meaning</th></tr>
+<tr><td><code>config</code></td><td>The four field lists</td><td>Sent on connect; the form is built from it.</td></tr>
+<tr><td><code>state_update</code></td><td><code>{property, parcels, warnings}</code></td><td>Whole current state.</td></tr>
+<tr><td><code>new_message</code></td><td><code>{speaker, text, timestamp}</code></td><td>A final utterance.</td></tr>
+<tr><td><code>partial_result</code></td><td><code>{speaker, text}</code></td><td>In-progress speech ("listening...").</td></tr>
+<tr><td><code>recording_started</code> / <code>recording_stopped</code></td><td>-</td><td>Update buttons and status bar.</td></tr>
+<tr><td><code>saved</code></td><td>state</td><td>Shows a brief "Saved to local database" toast.</td></tr>
+<tr><td><code>warning_message</code></td><td>text</td><td>Yellow banner (for example no microphone). Recording continues.</td></tr>
+<tr><td><code>error_message</code></td><td>text</td><td>Shown in the status bar (for example missing Speech key).</td></tr>
+</table>
+
+<h2 id="extract">9. Extraction rules</h2>
+<h3>What the model is told</h3>
+<ul>
+<li>Extract property tax details from a live call; a property can have several parcels, each parcel several taxing agencies, each agency several installments.</li>
+<li>Use only what is explicitly said; empty string for anything not stated; never guess.</li>
+<li>Return every parcel, agency and installment already in CURRENT STATE with its id and its values unchanged, and add new ones with an empty id.</li>
+<li>Do not move a value between parcels, agencies or installments unless the speaker clearly does.</li>
+<li><b>Repeats and confirmations:</b> a read-back ("so that is parcel 123-456-789, correct?", "yes, 1,250 due April 10") of something already stored is not new information. Do not create another parcel, agency or installment and do not change the stored value. A re-spelled or re-formatted version of the same value is a repeat.</li>
+<li><b>Never blank or drop</b> anything already in CURRENT STATE.</li>
+<li><b>Additions:</b> if a repeat adds a new detail (the agency's phone is now given), return the stored text plus the new detail; never less than what is stored.</li>
+<li><b>Corrections:</b> only when a speaker explicitly says an earlier value was wrong ("no, it is 456 not 457", "actually the due date is May 1"), add an entry to <code>corrections</code> with the item id, field key, new value and the quote as evidence. Use id <code>property</code> for property fields. A mishearing or unclear different value is not a correction.</li>
+<li><b>Review first:</b> before the data, write a brief <code>reasoning</code>: what is new, which repeats or confirmations were ignored, which corrections were made. This is the "LLM reasons and reviews" step; it is logged in the terminal as <code>[extract] ...</code> and is not stored.</li>
+<li>Followed by each field's <code>hint</code> text.</li>
+</ul>
+<p>The model must answer through a single tool, <code>record_extraction</code>, whose input schema is generated from <code>fields.py</code>. This keeps the response machine-readable. The app does not rely on strict schema enforcement here, so the merge step tolerates missing or odd values.</p>
+<h3>Merge rules (<code>merge()</code>)</h3>
+<p>The prompt asks the model to behave; the merge enforces the same integrity on its own, so a model slip cannot damage stored data.</p>
+<table>
+<tr><th>Rule</th><th>Behaviour</th></tr>
+<tr><td>Stored values are not rewritten</td><td>A repeat never replaces a stored value. Amounts and dates are only filled when empty. Text values (addresses, names, notes, agency details) are filled when empty, or replaced only by a longer version that contains the stored text (the address "9 Elm" becomes "9 Elm Rd"; a shorter or different one is ignored).</td></tr>
+<tr><td>Empty never clears</td><td>An empty or missing value from the model never erases a field you already have.</td></tr>
+<tr><td>Explicit corrections</td><td>The only way a stored value is replaced. Listed in <code>corrections</code> with the item id, key and quote; the new value is normalised first. Unknown ids and keys are ignored.</td></tr>
+<tr><td>Locked fields</td><td>Any field the user edited is stored as <code>(item id, key)</code> and is never changed by the model, including by a correction.</td></tr>
+<tr><td>Parcel matching</td><td>By id returned by the model; otherwise by normalised parcel number (lower-case letters and digits only, so <code>111-222</code> equals <code>111222</code>). No match creates a new parcel, but only if it has at least one value.</td></tr>
+<tr><td>Agency matching</td><td>Within a parcel: by id; otherwise by name, equal after normalising or one containing the other (at least 4 characters). No match creates a new agency.</td></tr>
+<tr><td>Installment matching</td><td>Within an agency: by id; otherwise same due date; otherwise same amount when either side has no date (so a date heard later completes the existing installment instead of adding one). No match creates a new installment.</td></tr>
+<tr><td>Deleted stays deleted</td><td>A deleted parcel (by normalised number), agency (by parcel and normalised name) or installment (by agency id, amount, due date) is not re-added by later extractions.</td></tr>
+<tr><td>Normalisation</td><td>Every value goes through <code>normalize()</code> before it is compared or stored.</td></tr>
+<tr><td>Changes reported</td><td><code>merge()</code> returns whether anything changed so the browser is only updated when needed.</td></tr>
+</table>
+<h3>Live vs final pass</h3>
+<table>
+<tr><th>Pass</th><th>Trigger</th><th>Input</th><th>Model</th></tr>
+<tr><td>Live</td><td>New final utterance, after a 2 s pause</td><td>Last 12 utterances + current values</td><td><code>LLM_LIVE_DEPLOYMENT</code> or the main deployment</td></tr>
+<tr><td>Final</td><td>Stop</td><td>Whole transcript + current values</td><td><code>LLM_FINAL_DEPLOYMENT</code> or the main deployment</td></tr>
+</table>
+
+<h2 id="storage">10. Storage</h2>
+<p>SQLite file <code>data/calls.db</code>. Created automatically; columns for new fields are added automatically. A database created before the agency level (installments tied to parcels) is not compatible: delete it or set <code>DB_PATH</code> to a new file. The old one in this folder was deleted.</p>
+<table>
+<tr><th>Table</th><th>Columns</th></tr>
+<tr><td><code>calls</code></td><td><code>call_id</code> (primary key), <code>saved_at</code>, <code>transcript</code>, plus one column per property field</td></tr>
+<tr><td><code>parcels</code></td><td><code>call_id</code>, <code>parcel_id</code>, plus one column per parcel field</td></tr>
+<tr><td><code>agencies</code></td><td><code>call_id</code>, <code>parcel_id</code>, <code>agency_id</code>, plus one column per agency field</td></tr>
+<tr><td><code>installments</code></td><td><code>call_id</code>, <code>agency_id</code>, <code>installment_id</code>, plus one column per installment field</td></tr>
+</table>
+<p>All field columns are <code>TEXT</code>. <code>save_call</code> is an upsert: it deletes the call's old rows and re-inserts them in one transaction, so saving repeatedly is safe.</p>
+<h3>Excel export</h3>
+<p>One row per installment, with agency, parcel and property values repeated, in this column order: Call ID, Saved At, Property Address, Parcel Number, Parcel Address, Agency Name, Agency Details, Tax Amount, Tax Due Date, Installment Note. A parcel with no agencies, an agency with no installments, or a call with no parcels still produces one row with blanks. Rows are ordered by save time. The export covers every saved call, not only the current one.</p>
+<p>The transcript is stored with timestamps and speaker labels, unredacted.</p>
+
+<h2 id="audio">11. Audio capture and speech</h2>
+<table>
+<tr><th>Item</th><th>Detail</th></tr>
+<tr><td>Caller-1</td><td>Default Windows microphone, handled directly by the Speech SDK (<code>use_default_microphone=True</code>).</td></tr>
+<tr><td>Caller-2</td><td>WASAPI loopback of the default speakers using PyAudioWPatch, so the remote party's voice is captured without "Stereo Mix". Format follows the device (sample rate and channel count) and is pushed to a Speech <code>PushAudioInputStream</code>. Needs Windows.</td></tr>
+<tr><td>Speech settings</td><td>Language <code>en-US</code> (configurable). End-of-speech silence 1200 ms and initial silence 15000 ms, to reduce cut-off sentences.</td></tr>
+<tr><td>Auto-restart</td><td>If Azure cancels or ends a session while still recording, the recognizer is rebuilt, up to 5 times per channel, 1 s apart.</td></tr>
+<tr><td>Echo filter</td><td>A final utterance is dropped if, within 2.5 s, the other channel produced text at least 72% similar (<code>SequenceMatcher</code>). It guards against your mic picking up the call audio. It is heuristic: very short repeated replies such as "yes" can occasionally be dropped.</td></tr>
+<tr><td>Speaker labels</td><td>"Caller-1" and "Caller-2" mean mic and system audio, not identified people. There is no diarization within a channel.</td></tr>
+<tr><td>Thread layout</td><td>Per recording: extraction thread, mic recognizer thread, speaker capture thread, plus a recognizer thread for Caller-2.</td></tr>
+</table>
+
+<h2 id="errors">12. Errors and what the user sees</h2>
+<table>
+<tr><th>Situation</th><th>Where it shows</th><th>Result</th></tr>
+<tr><td>Missing Claude key, endpoint or deployment</td><td>Terminal at startup</td><td>App exits with the names of the missing variables.</td></tr>
+<tr><td>Missing Speech key</td><td>Status bar on Start</td><td>Recording does not start.</td></tr>
+<tr><td>No microphone</td><td>Yellow banner (once per call) and terminal</td><td>Mic channel silent; system audio and extraction still work. Text mentions enabling "Record from this computer" for Remote Desktop.</td></tr>
+<tr><td>No loopback device / loopback stream fails</td><td>Yellow banner and terminal</td><td>Caller-2 not captured.</td></tr>
+<tr><td>Speech session cancelled with an error</td><td>Yellow banner and terminal</td><td>Recognizer restarts up to 5 times.</td></tr>
+<tr><td>LLM call fails or times out</td><td>Terminal only ("extraction failed")</td><td>That update is skipped; the next utterance retries. Stop still saves whatever state exists.</td></tr>
+<tr><td>Speaker repeats or confirms details</td><td>Terminal (<code>[extract]</code> reasoning)</td><td>Ignored: no duplicates, no overwrite, nothing cleared.</td></tr>
+<tr><td>Suspicious value (bad date, amount, format)</td><td>Orange field border with tooltip</td><td>Value kept; user decides.</td></tr>
+<tr><td>Server not running</td><td>Browser "refused to connect"</td><td>Start <code>python app.py</code> and keep the terminal open.</td></tr>
+</table>
+
+<h2 id="security">13. Security posture</h2>
+<table>
+<tr><th>Item</th><th>Status</th></tr>
+<tr><td>Secrets in source</td><td class="yes">None in the new files. Read from <code>.env</code>.</td></tr>
+<tr><td>Old keys in <code>legacy/</code> and <code>.env - bak</code></td><td class="no">Still present on disk. The old Speech, Azure OpenAI and Storage keys should be rotated and these files deleted.</td></tr>
+<tr><td>Network exposure</td><td class="yes">Binds to 127.0.0.1 only; no wildcard CORS.</td></tr>
+<tr><td>XSS in the page</td><td class="yes">Text inserted with <code>textContent</code>.</td></tr>
+<tr><td>Authentication</td><td class="no">None. Anyone on the same machine can open the page. Acceptable for a local single-user tool, not for sharing.</td></tr>
+<tr><td>PII in storage</td><td class="part">Transcripts and values are stored unredacted in SQLite in <code>data/</code>. There is no retention policy, consent notice or encryption beyond disk-level protection.</td></tr>
+<tr><td>Data sent out</td><td>Audio goes to Azure AI Speech; transcript text and current values go to the Claude deployment on Azure Foundry. Nothing else leaves the machine.</td></tr>
+<tr><td><code>.gitignore</code></td><td class="part">Covers <code>.env</code>, <code>data/</code>, <code>legacy/</code>, <code>__pycache__/</code>. Does not cover <code>.env - bak</code>. The folder is not a git repository today.</td></tr>
+</table>
+
+<h2 id="tests">14. Tests and verification</h2>
+<p>Run with <code>python -m pytest tests -q</code>. Result: <b>14 passed</b>. No test needs keys, the network or audio.</p>
+<table>
+<tr><th>Test</th><th>Checks</th></tr>
+<tr><td><code>test_normalize</code></td><td>Amount and date conversion; raw text kept when unparseable.</td></tr>
+<tr><td><code>test_check_flags_but_does_not_reject</code></td><td>Warnings for bad dates, amounts and formats.</td></tr>
+<tr><td><code>test_multiple_parcels_and_installments</code></td><td>Two parcels, one with two installments, are created correctly.</td></tr>
+<tr><td><code>test_update_by_id_and_by_parcel_number_no_duplicates</code></td><td>Matching by id and by number does not create duplicates.</td></tr>
+<tr><td><code>test_empty_never_clears_and_returns_unchanged</code></td><td>Empty values do not erase data; unchanged merge returns False.</td></tr>
+<tr><td><code>test_locked_field_is_not_overwritten</code></td><td>User edits survive later extractions.</td></tr>
+<tr><td><code>test_deleted_parcel_and_installment_stay_deleted</code></td><td>Deleted items are not resurrected.</td></tr>
+<tr><td><code>test_schema_follows_fields</code></td><td>Schema is closed (<code>additionalProperties</code> false) and includes agency and installment fields.</td></tr>
+<tr><td><code>test_store_roundtrip_and_export</code></td><td>Upsert has no duplicates; export has one row per installment.</td></tr>
+<tr><td><code>test_multiple_agencies_per_parcel</code></td><td>Two agencies on one parcel; a later mention of "county" finds "County" and adds to it.</td></tr>
+<tr><td><code>test_repeat_does_not_duplicate_rewrite_or_clear</code></td><td>Read-backs with other wording, a garbled amount and blank fields leave one parcel, one agency, one installment and the stored values intact.</td></tr>
+<tr><td><code>test_agency_details_extend_but_never_shrink</code></td><td>Phone then phone plus website extends the details; a later empty value does not shrink them.</td></tr>
+<tr><td><code>test_explicit_correction_replaces_value_but_respects_lock</code></td><td>A correction changes the amount; the same correction is ignored once the field is locked.</td></tr>
+<tr><td><code>test_date_filled_later_matches_same_amount_installment</code></td><td>An installment first heard without a date is completed, not duplicated.</td></tr>
+</table>
+<h3>Other checks done</h3>
+<ul>
+<li><b>Browser test of the agency form</b> (Playwright driving Edge against the running app, temporary database): add parcel, add agency (fields Agency Name and Agency Details), add and delete installments, add and delete an agency, type a date as <code>04/10/2026</code> and an amount as <code>1250</code>, click Save call, then download <code>/export.xlsx</code>. Result: all buttons worked, no JavaScript errors (only a missing favicon request), the date and amount were cleaned to <code>2026-04-10</code> and <code>1250.00</code> with no warning, and Excel had one complete row. Test data was removed afterwards.</li>
+<li><b>Earlier smoke test</b> (before the agency level) of the real Flask and Socket.IO app with a stubbed LLM: connect, add parcel and installment, edit (lock), warning for a bad date, extraction merge, save, export (HTTP 200), delete parcel.</li>
+<li><b>Live LLM call, agency model:</b> a made-up transcript with a property, one parcel and two agencies (County Tax Collector with two installments and a phone number; Lakeview ISD with one) was extracted correctly, with amounts, ISO dates and notes.</li>
+<li><b>Live LLM call, repeats:</b> six turns with the parcel read back twice, the amount and date repeated, the phone and website added at different times and one date corrected (April 10 to April 15), followed by a final full-transcript pass. Result: one parcel, one agency (details "Phone 555-010-2000; www.county.gov/tax"), one installment (1250.00, 2026-04-15, first half). Saved to a temporary database and exported to Excel as a single row.</li>
+<li><b>Speech key check</b>: token request to <code>centralindia</code> returned HTTP 200.</li>
+<li><b>No-microphone check</b>: the page receives the warning banner event.</li>
+<li><b>Not covered by automated tests</b>: <code>app.py</code> audio and recognizer code and the agency handlers (these were exercised only by the manual browser test above), <code>ui.py</code> JavaScript, and a live voice session.</li>
+</ul>
+
+<h2 id="run">15. Run and troubleshoot</h2>
+<pre><code>cd C:\Users\Ashwini\Desktop\Voice_data_extraction\Real_time_transcription
+pip install -r requirements.txt
+python app.py
+# then open http://127.0.0.1:5000 in a browser on the SAME machine</code></pre>
+<table>
+<tr><th>Symptom</th><th>Likely cause and fix</th></tr>
+<tr><td>"127.0.0.1 refused to connect"</td><td>The server is not running. Start it and keep the terminal open. On Remote Desktop, use the browser inside the remote session.</td></tr>
+<tr><td>"Missing environment variables" at startup</td><td>Run from this folder so <code>.env</code> is found; check the three Claude variables.</td></tr>
+<tr><td>"AZURE_SPEECH_KEY is missing"</td><td>Add the key and region to <code>.env</code>, restart.</td></tr>
+<tr><td>Yellow "no microphone found" banner</td><td>Connect a mic. On Remote Desktop enable Local Resources &gt; Remote audio &gt; Record from this computer, then reconnect.</td></tr>
+<tr><td>Only one speaker appears</td><td>Mic missing, or system audio muted/unavailable, or the echo filter dropped a duplicate.</td></tr>
+<tr><td>Form does not fill</td><td>Check the terminal for "extraction failed" (key, endpoint, deployment name or network).</td></tr>
+<tr><td>Orange field</td><td>Value looks wrong (date not ISO, amount not numeric, parcel number not matching the optional pattern). Edit it or ignore.</td></tr>
+</table>
+
+<h2 id="changes">16. Changes compared with the original app</h2>
+<table>
+<tr><th>Area</th><th>Original</th><th>Now</th></tr>
+<tr><td>Fields</td><td>4 fixed payment fields hardcoded in 4 places</td><td>Property, parcels, agencies, installments from <code>fields.py</code></td></tr>
+<tr><td>LLM</td><td>Azure OpenAI <code>gpt-4o</code>, JSON mode</td><td>Claude on Azure Foundry, forced tool call</td></tr>
+<tr><td>Extraction trigger</td><td>Every 0.2 s (commented as 3 s), full transcript each time</td><td>After each final utterance + 2 s, last 12 turns + current values; full pass at Stop</td></tr>
+<tr><td>Overwrites</td><td>Form replaced by every answer, including blanks</td><td>Merge: empties never clear, stored values not rewritten by repeats, explicit corrections only, edits locked, deletions remembered</td></tr>
+<tr><td>Repeats on the call</td><td>Not handled (whole transcript re-extracted, form overwritten)</td><td>Model reasons about repeats and confirmations; merge enforces no duplicates and no overwrite</td></tr>
+<tr><td>Validation</td><td>None</td><td>Amount and date normalisation; flags for bad values</td></tr>
+<tr><td>State</td><td>Global variables shared by all clients</td><td>One <code>Session</code> per browser connection</td></tr>
+<tr><td>Storage</td><td>Excel file in Azure Blob, read-modify-write; transcript in Blob</td><td>Local SQLite, Excel export on demand</td></tr>
+<tr><td>Secrets</td><td>Hardcoded keys in several files</td><td>From <code>.env</code></td></tr>
+<tr><td>Network</td><td>CORS <code>*</code></td><td>Localhost only, same-origin</td></tr>
+<tr><td>UI safety</td><td><code>innerHTML</code> with transcript text</td><td><code>textContent</code></td></tr>
+<tr><td>Audio problems</td><td>Terminal only</td><td>Banner on the page</td></tr>
+<tr><td>Speech config</td><td>Defaults</td><td>Language setting, silence timeouts, auto-restart, echo filter</td></tr>
+<tr><td>Files</td><td>Three app copies, dead LangChain file, mismatched requirements</td><td>One app, tests, corrected requirements; old files moved to <code>legacy/</code></td></tr>
+</table>
+
+<h2 id="gaps">17. Known gaps and limitations</h2>
+<ul>
+<li><b>Speech path not live-tested.</b> No microphone is available in this session, so the end-to-end spoken run is still to be done on a machine with a mic and call audio.</li>
+<li><b>No evidence or confidence per field.</b> The earlier design suggested storing the quoted source sentence and a confidence score for each value. Not built; reviewers cannot yet see why a value was extracted.</li>
+<li><b>Model output is not schema-enforced.</b> A forced tool call is reliable but not guaranteed; malformed answers are ignored by the merge or surface as warnings.</li>
+<li><b>Wrong first values stick.</b> Because repeats never overwrite, a value the model first heard wrongly is only fixed by an explicit spoken correction (which the model must recognise) or by you editing the field. A later, better-sounding repeat is deliberately ignored; text values can only be replaced by a longer version of themselves.</li>
+<li><b>Reasoning is not stored.</b> The model's repeat/correction review is only logged in the terminal, not shown on the page or saved to Excel.</li>
+<li><b>Agency details are free text.</b> Phone, address and website are in one field, so they cannot be filtered separately in Excel.</li>
+<li><b>Installment and agency identity are heuristic.</b> Installments match by id, due date, then amount; two installments with the same date under one agency could merge. Agencies match by name containment, so very similar names (for example "County" and "County Library District") could merge.</li>
+<li><b>Deleted-installment memory depends on values.</b> If the model later returns it with a different amount or date it can reappear. A deleted agency without a name is not remembered.</li>
+<li><b>Stop blocks while the final extraction runs.</b> A slow model call delays the "saved" confirmation.</li>
+<li><b>Failed LLM calls are silent in the UI.</b> Only the terminal shows "extraction failed".</li>
+<li><b>Transcriber is not a separate module.</b> Swapping to Deepgram or AssemblyAI means editing <code>app.py</code>; the planned adapter seam and vendor bake-off are not done.</li>
+<li><b>Speaker identification.</b> Mic vs system audio only; several remote people are not separated.</li>
+<li><b>Echo filter is heuristic.</b> May drop short repeated replies.</li>
+<li><b>Data handling.</b> Transcripts stored unredacted; no delete-call or retention feature; no login.</li>
+<li><b>Export is all-or-nothing.</b> It always exports every saved call.</li>
+<li><b>Typed values are cleaned on blur only.</b> A value is normalised when you leave the field, so it is raw while you type and in the saved state until then.</li>
+<li><b>Start discards pre-Start edits.</b> Reset on Start clears anything typed before recording begins.</li>
+<li><b>Windows only.</b> Loopback capture relies on WASAPI.</li>
+<li><b>Housekeeping.</b> <code>.env.example</code> is missing; <code>.env - bak</code> and <code>legacy/</code> hold old credentials; <code>.deployment</code> and <code>.vscode</code> App Service settings are obsolete; <code>.env</code> may contain variables from another project that this app ignores.</li>
+</ul>
+
+<h2 id="next">18. Recommended next steps</h2>
+<ol>
+<li><b>Rotate the old keys</b> (Azure Speech, Azure OpenAI, Storage account) and delete <code>legacy/</code> and <code>.env - bak</code> once not needed.</li>
+<li><b>Run a real session</b> on a machine with a working mic: play a recorded call through the speakers, speak, and confirm both channels, live form updates, Stop, Save and Export.</li>
+<li><b>Collect 10-20 recorded or transcribed calls with the correct answers</b> and build a small replay script to measure per-field accuracy; tune the field hints with it.</li>
+<li><b>Add the updated field specification</b> once available (one line per field in <code>fields.py</code>).</li>
+<li><b>Show LLM errors on the page</b> and add per-field evidence quotes so values can be verified quickly.</li>
+<li><b>Move speech behind a transcriber adapter</b> and run the vendor bake-off on your own audio if accuracy needs improving.</li>
+<li><b>Recreate <code>.env.example</code></b>, add <code>.env - bak</code> to <code>.gitignore</code>, initialise git, and remove the obsolete App Service files if hosting stays out of scope.</li>
+<li>If the tool will be shared: add login, PII redaction, a consent notice and a retention setting.</li>
+</ol>
+</main>
+</body>
+</html>
